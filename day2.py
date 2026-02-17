@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import random
+import time
 from dataclasses import dataclass
 
 from anthropic import Anthropic
@@ -28,7 +30,7 @@ class Day2PromptBuilder:
             "2) Три маркированных пункта с фактами\n"
             "3) Одна строка с выводом\n"
             "Ограничение длины: не более 90 слов.\n"
-            "Условие завершения: после вывода напишите строку <END> и остановитесь."
+            "Условие завершения: после вывода напишите строку /end и остановитесь."
         )
 
 
@@ -46,18 +48,38 @@ class Day2Demo:
         constrained = self._request(
             prompt=builder.build_constrained(),
             max_tokens=160,
-            stop_sequences=["<END>"],
+            stop_sequences=["/end"]
         )
         return ResponsePair(unconstrained=unconstrained, constrained=constrained)
 
-    def _request(self, prompt: str, max_tokens: int, stop_sequences: list[str] | None = None) -> str:
-        message = self._client.messages.create(
-            model=self._model,
-            max_tokens=max_tokens,
-            stop_sequences=stop_sequences,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return message.content[0].text
+    def _request(
+        self,
+        prompt: str,
+        max_tokens: int,
+        stop_sequences: list[str] | None = None,
+        *,
+        max_retries: int = 5,
+        base_delay: float = 0.6,
+    ) -> str:
+        attempt = 0
+        while True:
+            try:
+                message = self._client.messages.create(
+                    model=self._model,
+                    max_tokens=max_tokens,
+                    stop_sequences=stop_sequences,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                return message.content[0].text
+            except Exception as exc:  # pragma: no cover - depends on API behavior
+                attempt += 1
+                status_code = getattr(exc, "status_code", None)
+                is_overloaded = status_code == 529 or "overloaded" in str(exc).lower()
+                if not is_overloaded or attempt > max_retries:
+                    raise
+                delay = base_delay * (2 ** (attempt - 1))
+                jitter = random.uniform(0, 0.2)
+                time.sleep(delay + jitter)
 
 
 def _run_cli() -> None:
@@ -71,7 +93,7 @@ def _run_cli() -> None:
         raise SystemExit("Пустой запрос.")
 
     client = Anthropic(api_key=api_key)
-    demo = Day2Demo(client=client, model="claude-opus-4-6")
+    demo = Day2Demo(client=client, model="claude-opus-4-5-20251101")
     pair = demo.run(base_prompt=base_prompt)
 
     print("\nБез ограничений:\n")

@@ -11,15 +11,19 @@
 
 from __future__ import annotations
 
+import json
 import os
 import random
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
+
+HISTORY_DIR = Path(__file__).parent / "chat_history"
 
 
 @dataclass(frozen=True)
@@ -53,12 +57,50 @@ class Agent:
         model: str,
         system: str,
         max_tokens: int = 1024,
+        session_id: str | None = None,
     ) -> None:
         self._client = client
         self._model = model
         self._system = system
         self._max_tokens = max_tokens
+        self._session_id = session_id
         self._history: list[dict[str, str]] = []
+
+        # Загружаем историю с диска, если сессия задана
+        if session_id:
+            self._load()
+
+    # ── Персистентность ──────────────────────────────────────────
+
+    @property
+    def _history_path(self) -> Path | None:
+        if not self._session_id:
+            return None
+        return HISTORY_DIR / f"{self._session_id}.json"
+
+    def _save(self) -> None:
+        """Сохранить историю на диск (если задан session_id)."""
+        path = self._history_path
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "session_id": self._session_id,
+            "model": self._model,
+            "system": self._system,
+            "messages": self._history,
+        }
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        tmp.replace(path)
+
+    def _load(self) -> None:
+        """Загрузить историю с диска (если файл существует)."""
+        path = self._history_path
+        if path is None or not path.exists():
+            return
+        data = json.loads(path.read_text())
+        self._history = data.get("messages", [])
 
     # ── Публичный интерфейс ──────────────────────────────────────
 
@@ -69,6 +111,7 @@ class Agent:
         response = self._call_llm()
 
         self._history.append({"role": "assistant", "content": response.text})
+        self._save()
         return response
 
     def ask_stream(
@@ -96,6 +139,7 @@ class Agent:
         response = self._call_llm_stream(on_token)
 
         self._history.append({"role": "assistant", "content": response.text})
+        self._save()
         return response
 
     def compact(self) -> AgentResponse:
@@ -169,6 +213,8 @@ class Agent:
             ),
         })
 
+        self._save()
+
         return AgentResponse(
             text=(
                 f"Сжато {old_count} сообщений → 2.\n"
@@ -191,6 +237,7 @@ class Agent:
     def reset(self) -> None:
         """Сбросить историю диалога (начать заново)."""
         self._history.clear()
+        self._save()
 
     @property
     def history(self) -> list[dict[str, str]]:
@@ -315,15 +362,20 @@ def _run_cli() -> None:
     client = Anthropic(api_key=api_key)
     model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
+    session_id = os.getenv("SESSION_ID", "default")
+
     agent = Agent(
         client=client,
         model=model,
         system=SYSTEM_PROMPT,
         max_tokens=1024,
+        session_id=session_id,
     )
 
-    print(f"День 6. Агент ({model})")
-    print(f"Системный промпт: {SYSTEM_PROMPT.strip()[:60]}...")
+    print(f"День 6–7. Агент ({model})")
+    print(f"Сессия: {session_id}")
+    if agent.turn_count > 0:
+        print(f"Загружена история: {len(agent.history)} сообщений, {agent.turn_count} реплик")
     print("Команды: /compact — сжать контекст, /reset — сбросить, /info — статистика, /exit — выход")
     print()
 

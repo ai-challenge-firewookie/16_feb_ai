@@ -8,8 +8,6 @@ from dataclasses import dataclass
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
-
-
 TASK_TEXT = (
     "Логическая задача: есть три человека A, B, C. "
     "Рыцарь всегда говорит правду, лжец всегда лжет.\n"
